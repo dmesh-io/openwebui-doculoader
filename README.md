@@ -69,6 +69,28 @@ docker run -d \
 | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | Azure Document Intelligence endpoint URL | Yes | - |
 | `AZURE_DOCUMENT_INTELLIGENCE_KEY` | Azure API key | Yes | - |
 | `TEMP_WORK_DIR` | Temporary directory for file processing | No | `/tmp/doculoader` |
+| `AZURE_DOCUMENT_INTELLIGENCE_MODEL` | Model used for analysis. `prebuilt-layout` detects tables, headings, figures and selection marks. `prebuilt-read` is cheaper but returns plain text only | No | `prebuilt-layout` |
+| `AZURE_DOCUMENT_INTELLIGENCE_OUTPUT_FORMAT` | `markdown` or `text`. Markdown preserves headings and table structure and requires `prebuilt-layout` | No | `markdown` |
+
+#### Table extraction
+
+With the defaults above, tables are returned inside `page_content` as markup rather than
+flattened lines. Simple tables come back as markdown pipe tables:
+
+```markdown
+| Name | Corp | Remark |
+| - | - | - |
+| Foo | | |
+| Bar | Microsoft | Dummy |
+```
+
+Tables with merged cells, captions or complex headers come back as HTML `<table>` markup,
+which preserves `rowspan` and `colspan`. Both forms are readable by an LLM, unlike the
+line-by-line output of `prebuilt-read`.
+
+Note that `prebuilt-layout` is billed at a higher per-page rate than `prebuilt-read`. Set
+`AZURE_DOCUMENT_INTELLIGENCE_MODEL=prebuilt-read` and
+`AZURE_DOCUMENT_INTELLIGENCE_OUTPUT_FORMAT=text` to return to the cheaper plain text behaviour.
 
 ## API Endpoints
 
@@ -131,10 +153,10 @@ Now when you upload PDF documents to Open Web UI, they will be processed through
 
 1. Client (Open Web UI) sends a PUT request to `/process` with raw PDF data
 2. PDF is split into individual page files using pypdf library
-3. Each page file is sent separately to Azure Document Intelligence using the `prebuilt-read` model
-4. Text is extracted from each page independently
+3. Each page file is sent separately to Azure Document Intelligence using the `prebuilt-layout` model
+4. Markdown content, including table markup, is extracted from each page independently
 5. Results from all pages are accumulated and formatted with page markers
-6. Complete text is returned in `page_content` field with metadata
+6. Complete content is returned in `page_content` field with metadata
 7. Temporary files (original PDF and page files) are cleaned up
 
 ## Development
