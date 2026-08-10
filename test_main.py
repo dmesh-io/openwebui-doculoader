@@ -135,15 +135,8 @@ class TestProcessEndpoint:
         
         # Mock Azure response for the page
         mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line1 = Mock()
-        mock_line1.content = "Test line 1"
-        mock_line2 = Mock()
-        mock_line2.content = "Test line 2"
-        mock_page.lines = [mock_line1, mock_line2]
-        mock_result.pages = [mock_page]
-        
+        mock_result.content = "Test line 1\nTest line 2"
+
         mock_poller = Mock()
         mock_poller.result.return_value = mock_result
         
@@ -205,13 +198,8 @@ class TestProcessEndpoint:
         
         # Mock Azure response
         mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line = Mock()
-        mock_line.content = "Test content"
-        mock_page.lines = [mock_line]
-        mock_result.pages = [mock_page]
-        
+        mock_result.content = "Test content"
+
         mock_poller = Mock()
         mock_poller.result.return_value = mock_result
         
@@ -262,13 +250,8 @@ class TestProcessEndpoint:
         
         # Mock Azure response
         mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line = Mock()
-        mock_line.content = "Test"
-        mock_page.lines = [mock_line]
-        mock_result.pages = [mock_page]
-        
+        mock_result.content = "Test"
+
         mock_poller = Mock()
         mock_poller.result.return_value = mock_result
         
@@ -313,12 +296,7 @@ class TestMultiPageProcessing:
         # We'll create 3 different results for the 3 pages
         def create_mock_result(content):
             mock_result = Mock()
-            mock_page = Mock()
-            mock_page.page_number = 1  # Each split page is page 1 of its own PDF
-            mock_line = Mock()
-            mock_line.content = content
-            mock_page.lines = [mock_line]
-            mock_result.pages = [mock_page]
+            mock_result.content = content
             return mock_result
         
         # Mock the Azure client to return different content for each call

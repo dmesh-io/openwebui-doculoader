@@ -9,6 +9,7 @@ from typing import Optional, List
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from azure.ai.documentintelligence import DocumentIntelligenceClient
+from azure.ai.documentintelligence.models import DocumentContentFormat
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from pypdf import PdfReader, PdfWriter
@@ -27,6 +28,22 @@ app = FastAPI(
 AZURE_ENDPOINT = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
 AZURE_KEY = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
 TEMP_DIR = os.getenv("TEMP_WORK_DIR", "/tmp/doculoader")
+
+# prebuilt-layout detects tables, headings and figures; prebuilt-read only returns raw lines.
+# Markdown output is only produced by layout-capable models.
+AZURE_MODEL_ID = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_MODEL", "prebuilt-layout")
+AZURE_OUTPUT_FORMAT = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_OUTPUT_FORMAT", "markdown").lower()
+
+if AZURE_OUTPUT_FORMAT not in (DocumentContentFormat.TEXT, DocumentContentFormat.MARKDOWN):
+    raise ValueError(
+        f"AZURE_DOCUMENT_INTELLIGENCE_OUTPUT_FORMAT must be 'text' or 'markdown', got '{AZURE_OUTPUT_FORMAT}'"
+    )
+
+if AZURE_OUTPUT_FORMAT == DocumentContentFormat.MARKDOWN and AZURE_MODEL_ID == "prebuilt-read":
+    logger.warning(
+        "prebuilt-read does not support markdown output or table detection; "
+        "use prebuilt-layout instead"
+    )
 
 # Validate environment variables
 if not AZURE_ENDPOINT:
@@ -141,13 +158,18 @@ def split_pdf_by_pages(input_pdf_path: str, output_dir: str) -> List[str]:
 
 def extract_text_from_pdf(file_path: str) -> str:
     """
-    Extract text from a single-page PDF using Azure Document Intelligence.
-    
+    Extract content from a single-page PDF using Azure Document Intelligence.
+
+    With the default prebuilt-layout model and markdown output format, the
+    returned content keeps document structure: headings, paragraphs, selection
+    marks and tables. Simple tables come back as markdown pipe tables, tables
+    with merged cells or captions come back as HTML <table> markup.
+
     Args:
         file_path: Path to the PDF file (should be a single page)
-        
+
     Returns:
-        Extracted text from the page
+        Extracted content from the page, markdown formatted by default
     """
     logger.info(f"extract_text_from_pdf starting: {file_path}")
     client = get_azure_client()
@@ -156,26 +178,21 @@ def extract_text_from_pdf(file_path: str) -> str:
         # Read the PDF file as bytes
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
-        # Use prebuilt-read model for OCR
+
         poller = client.begin_analyze_document(
-            "prebuilt-read",
+            AZURE_MODEL_ID,
             body=pdf_bytes,
-            content_type="application/pdf"
+            content_type="application/pdf",
+            output_content_format=AZURE_OUTPUT_FORMAT
         )
         result = poller.result()
-        
-        # Extract text from the page
-        page_text = []
-        
-        if result.pages:
-            for page in result.pages:
-                # Extract text from lines on this page
-                if page.lines:
-                    for line in page.lines:
-                        page_text.append(line.content)
-        
-        return "\n".join(page_text)
-        
+
+        # result.content is the whole page rendered in the requested format,
+        # including table markup. Falling back to per-line text would silently
+        # drop that structure, so an empty page is returned as an empty string.
+        return result.content or ""
+
+
     except HttpResponseError as e:
         logger.error(f"Azure API error: {e}")
         raise HTTPException(status_code=500, detail=f"Azure API error: {str(e)}")
@@ -337,7 +354,9 @@ async def process_document(
                 "metadata": {
                     "filename": filename,
                     "content_type": content_type or "application/pdf",
-                    "engine": "azure-document-intelligence"
+                    "engine": "azure-document-intelligence",
+                    "model": AZURE_MODEL_ID,
+                    "output_format": AZURE_OUTPUT_FORMAT
                 }
             }
         )
