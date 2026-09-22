@@ -1,10 +1,12 @@
 """
-Pytest tests for OpenWebUI Document Loader API.
+Pytest tests for OpenWebUI Document Loader API using Azure AI Content Understanding.
 """
+import io
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
-from main import app
+from azure.core.exceptions import HttpResponseError
+from main import app, extract_text_from_pdf
 
 
 @pytest.fixture
@@ -14,82 +16,41 @@ def client():
 
 
 @pytest.fixture
-def mock_azure_and_split():
-    """Mock both Azure client and PDF splitting."""
-    with patch('main.get_azure_client') as mock_azure, \
-         patch('main.split_pdf_by_pages') as mock_split:
-        yield mock_azure, mock_split
+def mock_azure_client():
+    """Mock Azure Content Understanding client."""
+    with patch('main.get_azure_client') as mock_get_client:
+        mock_client_instance = Mock()
+        mock_get_client.return_value = mock_client_instance
+        yield mock_client_instance
 
 
-def create_test_pdf_bytes():
-    """Create a simple test PDF in bytes."""
-    # Simple PDF structure
-    pdf_content = b"""%PDF-1.4
-1 0 obj
-<<
-/Type /Catalog
-/Pages 2 0 R
->>
-endobj
-2 0 obj
-<<
-/Type /Pages
-/Kids [3 0 R]
-/Count 1
->>
-endobj
-3 0 obj
-<<
-/Type /Page
-/Parent 2 0 R
-/MediaBox [0 0 612 792]
-/Contents 4 0 R
-/Resources <<
-/Font <<
-/F1 <<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
->>
->>
->>
->>
-endobj
-4 0 obj
-<<
-/Length 44
->>
-stream
-BT
-/F1 12 Tf
-100 700 Td
-(Test PDF) Tj
-ET
-endstream
-endobj
+def create_test_pdf_bytes() -> bytes:
+    """Create simple test PDF bytes."""
+    return b"""%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >> endobj
+4 0 obj << /Length 44 >> stream
+BT /F1 12 Tf 100 700 Td (Test PDF) Tj ET
+endstream endobj
 xref
 0 5
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
 0000000115 00000 n 
-0000000317 00000 n 
-trailer
-<<
-/Size 5
-/Root 1 0 R
->>
+0000000214 00000 n 
+trailer << /Size 5 /Root 1 0 R >>
 startxref
-410
+308
 %%EOF"""
-    return pdf_content
 
 
 class TestHealthEndpoints:
     """Test health check endpoints."""
     
     def test_root_endpoint(self, client):
-        """Test root endpoint returns health status."""
+        """Test root endpoint returns service info and health status."""
         response = client.get("/")
         assert response.status_code == 200
         data = response.json()
@@ -110,57 +71,10 @@ class TestProcessEndpoint:
     """Test document processing endpoint."""
     
     def test_process_endpoint_without_credentials(self, client):
-        """Test that endpoint returns error when Azure credentials not configured."""
+        """Test that endpoint returns HTTP 500 when Azure credentials are not configured."""
         pdf_data = create_test_pdf_bytes()
         
-        response = client.put(
-            "/process",
-            content=pdf_data,
-            headers={
-                "Content-Type": "application/pdf",
-                "X-Filename": "test.pdf"
-            }
-        )
-        
-        # Should fail due to missing credentials
-        assert response.status_code == 500
-        assert "credentials" in response.json()["detail"].lower()
-    
-    def test_process_endpoint_with_mock_azure(self, client, mock_azure_and_split):
-        """Test successful document processing with mocked Azure client."""
-        mock_azure_client, mock_split = mock_azure_and_split
-        
-        # Mock PDF splitting to return a single page file
-        mock_split.return_value = ["/tmp/page_1.pdf"]
-        
-        # Mock Azure response for the page
-        mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line1 = Mock()
-        mock_line1.content = "Test line 1"
-        mock_line2 = Mock()
-        mock_line2.content = "Test line 2"
-        mock_page.lines = [mock_line1, mock_line2]
-        mock_result.pages = [mock_page]
-        
-        mock_poller = Mock()
-        mock_poller.result.return_value = mock_result
-        
-        mock_client_instance = Mock()
-        mock_client_instance.begin_analyze_document.return_value = mock_poller
-        mock_azure_client.return_value = mock_client_instance
-        
-        # Mock file operations - need to mock open() for reading page files
-        mock_file = Mock()
-        mock_file.read.return_value = b"fake pdf data"
-        mock_file.__enter__ = Mock(return_value=mock_file)
-        mock_file.__exit__ = Mock(return_value=False)
-        
-        with patch('builtins.open', return_value=mock_file), \
-             patch('os.path.exists', return_value=False):
-            # Make request
-            pdf_data = create_test_pdf_bytes()
+        with patch('main.AZURE_ENDPOINT', None), patch('main.AZURE_KEY', None):
             response = client.put(
                 "/process",
                 content=pdf_data,
@@ -169,20 +83,45 @@ class TestProcessEndpoint:
                     "X-Filename": "test.pdf"
                 }
             )
+            assert response.status_code == 500
+            assert "credentials not configured" in response.json()["detail"].lower()
+    
+    def test_process_endpoint_with_mock_azure(self, client, mock_azure_client):
+        """Test successful document processing with mocked Azure Content Understanding client."""
+        mock_result = Mock()
+        mock_content = Mock()
+        mock_content.markdown = "# Test Document\n\nThis is extracted text with layout."
+        mock_result.contents = [mock_content]
+        
+        mock_poller = Mock()
+        mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
+        
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={
+                "Content-Type": "application/pdf",
+                "X-Filename": "spec.pdf"
+            }
+        )
         
         # Verify response
         assert response.status_code == 200
         data = response.json()
         assert "page_content" in data
-        assert "metadata" in data
-        assert "Test line 1" in data["page_content"]
-        assert "Test line 2" in data["page_content"]
-        assert data["metadata"]["filename"] == "test.pdf"
-        assert data["metadata"]["engine"] == "azure-document-intelligence"
+        assert "# Test Document" in data["page_content"]
+        assert "This is extracted text with layout." in data["page_content"]
+        assert data["metadata"]["filename"] == "spec.pdf"
+        assert data["metadata"]["content_type"] == "application/pdf"
+        assert data["metadata"]["engine"] == "azure-content-understanding"
+        
+        mock_azure_client.begin_analyze_binary.assert_called_once()
     
     def test_process_endpoint_non_pdf(self, client):
         """Test that endpoint rejects non-PDF files."""
-        text_data = b"This is not a PDF"
+        text_data = b"This is not a PDF file"
         
         response = client.put(
             "/process",
@@ -196,51 +135,31 @@ class TestProcessEndpoint:
         assert response.status_code == 400
         assert "Only PDF files are supported" in response.json()["detail"]
     
-    def test_process_endpoint_no_filename(self, client, mock_azure_and_split):
-        """Test processing without X-Filename header uses default."""
-        mock_azure_client, mock_split = mock_azure_and_split
-        
-        # Mock PDF splitting
-        mock_split.return_value = ["/tmp/page_1.pdf"]
-        
-        # Mock Azure response
+    def test_process_endpoint_no_filename(self, client, mock_azure_client):
+        """Test processing without X-Filename header uses default 'document.pdf'."""
         mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line = Mock()
-        mock_line.content = "Test content"
-        mock_page.lines = [mock_line]
-        mock_result.pages = [mock_page]
+        mock_content = Mock()
+        mock_content.markdown = "Default document content"
+        mock_result.contents = [mock_content]
         
         mock_poller = Mock()
         mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
         
-        mock_client_instance = Mock()
-        mock_client_instance.begin_analyze_document.return_value = mock_poller
-        mock_azure_client.return_value = mock_client_instance
-        
-        # Mock file operations
-        mock_file = Mock()
-        mock_file.read.return_value = b"fake pdf"
-        mock_file.__enter__ = Mock(return_value=mock_file)
-        mock_file.__exit__ = Mock(return_value=False)
-        
-        with patch('builtins.open', return_value=mock_file), \
-             patch('os.path.exists', return_value=False):
-            # Make request without X-Filename
-            pdf_data = create_test_pdf_bytes()
-            response = client.put(
-                "/process",
-                content=pdf_data,
-                headers={"Content-Type": "application/pdf"}
-            )
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={"Content-Type": "application/pdf"}
+        )
         
         assert response.status_code == 200
         data = response.json()
         assert data["metadata"]["filename"] == "document.pdf"
+        assert data["page_content"] == "Default document content"
     
     def test_process_endpoint_empty_body(self, client):
-        """Test that endpoint rejects empty body."""
+        """Test that endpoint rejects empty request body."""
         response = client.put(
             "/process",
             content=b"",
@@ -253,113 +172,124 @@ class TestProcessEndpoint:
         assert response.status_code == 400
         assert "No file data provided" in response.json()["detail"]
     
-    def test_process_endpoint_with_authorization(self, client, mock_azure_and_split):
+    def test_process_endpoint_with_authorization(self, client, mock_azure_client):
         """Test that endpoint accepts Authorization header."""
-        mock_azure_client, mock_split = mock_azure_and_split
-        
-        # Mock PDF splitting
-        mock_split.return_value = ["/tmp/page_1.pdf"]
-        
-        # Mock Azure response
         mock_result = Mock()
-        mock_page = Mock()
-        mock_page.page_number = 1
-        mock_line = Mock()
-        mock_line.content = "Test"
-        mock_page.lines = [mock_line]
-        mock_result.pages = [mock_page]
+        mock_content = Mock()
+        mock_content.markdown = "Authorized content extraction"
+        mock_result.contents = [mock_content]
         
         mock_poller = Mock()
         mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
         
-        mock_client_instance = Mock()
-        mock_client_instance.begin_analyze_document.return_value = mock_poller
-        mock_azure_client.return_value = mock_client_instance
-        
-        # Mock file operations
-        mock_file = Mock()
-        mock_file.read.return_value = b"fake pdf"
-        mock_file.__enter__ = Mock(return_value=mock_file)
-        mock_file.__exit__ = Mock(return_value=False)
-        
-        with patch('builtins.open', return_value=mock_file), \
-             patch('os.path.exists', return_value=False):
-            # Make request with Authorization header
-            pdf_data = create_test_pdf_bytes()
-            response = client.put(
-                "/process",
-                content=pdf_data,
-                headers={
-                    "Content-Type": "application/pdf",
-                    "X-Filename": "test.pdf",
-                    "Authorization": "Bearer test-token"
-                }
-            )
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={
+                "Content-Type": "application/pdf",
+                "X-Filename": "test.pdf",
+                "Authorization": "Bearer test-token-12345"
+            }
+        )
         
         assert response.status_code == 200
+        assert response.json()["page_content"] == "Authorized content extraction"
 
 
-class TestMultiPageProcessing:
-    """Test multi-page document processing."""
+class TestLayoutAndMarkdownExtraction:
+    """Test layout, table, and multi-content extraction."""
     
-    def test_multiple_pages(self, client, mock_azure_and_split):
-        """Test processing document with multiple pages."""
-        mock_azure_client, mock_split = mock_azure_and_split
+    def test_table_markdown_extraction(self, client, mock_azure_client):
+        """Test that markdown tables are properly preserved in page_content."""
+        table_markdown = """# Technical Specification
+
+| Parameter | Value | Unit |
+| :--- | :--- | :--- |
+| Voltage | 230 | V |
+| Current | 16 | A |
+| Frequency | 50 | Hz |
+"""
+        mock_result = Mock()
+        mock_content = Mock()
+        mock_content.markdown = table_markdown
+        mock_result.contents = [mock_content]
         
-        # Mock PDF splitting to return 3 page files
-        mock_split.return_value = ["/tmp/page_1.pdf", "/tmp/page_2.pdf", "/tmp/page_3.pdf"]
+        mock_poller = Mock()
+        mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
         
-        # Mock Azure responses - each page is processed separately
-        # We'll create 3 different results for the 3 pages
-        def create_mock_result(content):
-            mock_result = Mock()
-            mock_page = Mock()
-            mock_page.page_number = 1  # Each split page is page 1 of its own PDF
-            mock_line = Mock()
-            mock_line.content = content
-            mock_page.lines = [mock_line]
-            mock_result.pages = [mock_page]
-            return mock_result
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={"Content-Type": "application/pdf"}
+        )
         
-        # Mock the Azure client to return different content for each call
-        call_count = [0]
-        page_contents = ["Page 1 content", "Page 2 content", "Page 3 content"]
+        assert response.status_code == 200
+        content = response.json()["page_content"]
+        assert "| Parameter | Value | Unit |" in content
+        assert "| Voltage | 230 | V |" in content
+    
+    def test_multiple_contents(self, client, mock_azure_client):
+        """Test processing document returning multiple content segments."""
+        mock_result = Mock()
+        mock_c1 = Mock()
+        mock_c1.markdown = "# Section 1\nContent for section 1"
+        mock_c2 = Mock()
+        mock_c2.markdown = "# Section 2\nContent for section 2"
+        mock_result.contents = [mock_c1, mock_c2]
         
-        def mock_analyze(*args, **kwargs):
-            mock_poller = Mock()
-            mock_poller.result.return_value = create_mock_result(page_contents[call_count[0]])
-            call_count[0] += 1
-            return mock_poller
+        mock_poller = Mock()
+        mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
         
-        mock_client_instance = Mock()
-        mock_client_instance.begin_analyze_document.side_effect = mock_analyze
-        mock_azure_client.return_value = mock_client_instance
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={"Content-Type": "application/pdf"}
+        )
         
-        # Mock file operations
-        mock_file = Mock()
-        mock_file.read.return_value = b"fake pdf"
-        mock_file.__enter__ = Mock(return_value=mock_file)
-        mock_file.__exit__ = Mock(return_value=False)
-        
-        with patch('builtins.open', return_value=mock_file), \
-             patch('os.path.exists', return_value=False):
-            # Make request
-            pdf_data = create_test_pdf_bytes()
-            response = client.put(
-                "/process",
-                content=pdf_data,
-                headers={
-                    "Content-Type": "application/pdf",
-                    "X-Filename": "multi-page.pdf"
-                }
-            )
-        
-        # Verify response
         assert response.status_code == 200
         data = response.json()
-        assert "Page 1 content" in data["page_content"]
-        assert "Page 2 content" in data["page_content"]
-        assert "Page 3 content" in data["page_content"]
-        assert "Page 1" in data["page_content"]
-        assert "Page 2" in data["page_content"]
-        assert "Page 3" in data["page_content"]
+        assert "Section 1" in data["page_content"]
+        assert "Section 2" in data["page_content"]
+    
+    def test_azure_api_error_handling(self, client, mock_azure_client):
+        """Test proper error handling when Azure API returns HttpResponseError."""
+        mock_azure_client.begin_analyze_binary.side_effect = HttpResponseError(
+            message="Azure Service Unavailable"
+        )
+        
+        pdf_data = create_test_pdf_bytes()
+        response = client.put(
+            "/process",
+            content=pdf_data,
+            headers={"Content-Type": "application/pdf"}
+        )
+        
+        assert response.status_code == 500
+        assert "Azure API error" in response.json()["detail"]
+
+
+class TestDirectExtractionFunction:
+    """Test helper extraction from file path on disk."""
+    
+    def test_extract_text_from_pdf_file(self, mock_azure_client, tmp_path):
+        """Test extract_text_from_pdf with a file path."""
+        test_file = tmp_path / "test.pdf"
+        test_file.write_bytes(create_test_pdf_bytes())
+        
+        mock_result = Mock()
+        mock_content = Mock()
+        mock_content.markdown = "# Extracted File Content"
+        mock_result.contents = [mock_content]
+        
+        mock_poller = Mock()
+        mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
+        
+        result = extract_text_from_pdf(str(test_file))
+        assert result == "# Extracted File Content"

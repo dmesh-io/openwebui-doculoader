@@ -16,8 +16,9 @@ COPY main.py .
 RUN mkdir -p /tmp/doculoader
 
 # Environment variables (defaults, override with docker run -e)
-ENV AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=""
-ENV AZURE_DOCUMENT_INTELLIGENCE_KEY=""
+ENV AZURE_CONTENT_UNDERSTANDING_ENDPOINT=""
+ENV AZURE_CONTENT_UNDERSTANDING_KEY=""
+ENV AZURE_CONTENT_UNDERSTANDING_ANALYZER_ID="prebuilt-documentSearch"
 ENV TEMP_WORK_DIR="/tmp/doculoader"
 
 # Expose port

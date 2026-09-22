@@ -1,29 +1,31 @@
 # OpenWebUI Document Loader
 
-External document OCR service for Open Web UI using Azure Document Intelligence. This service provides per-page PDF text extraction compatible with Open Web UI's external document extraction API.
+External document extraction service for Open Web UI using Azure AI Content Understanding. This service provides structured markdown text extraction compatible with Open Web UI's external document extraction API.
 
 ## Features
 
-- **Azure Document Intelligence Integration**: Uses Azure's powerful OCR capabilities via Azure Foundry
-- **Per-Page Processing**: Splits PDF into individual page files, sends each page separately to Azure Document Intelligence, and accumulates results
+- **Azure AI Content Understanding Integration**: Uses Azure's multimodal generative AI and extraction capabilities via Azure AI Foundry
+- **Structured Markdown Output**: Extracts headings, paragraphs, lists, and tables formatted as GitHub-Flavored Markdown for optimal RAG and LLM context
 - **Open Web UI Compatible**: Implements the standard external document extraction API format
 - **FastAPI Backend**: High-performance async API with automatic documentation
 - **Docker Support**: Easy deployment with Docker container
-- **Configurable**: Environment-based configuration for Azure credentials and working directory
+- **Configurable**: Environment-based configuration for Azure credentials, analyzer ID, and working directory
 
 ## Requirements
 
 - Python 3.11+
-- Azure Document Intelligence resource (from Azure Foundry)
+- Azure AI Content Understanding resource (from Azure AI Foundry)
 - Docker (for containerized deployment)
 
 ## Setup
 
-### 1. Azure Document Intelligence
+### 1. Azure AI Content Understanding
 
-1. Create an Azure Document Intelligence resource in Azure Portal or Azure Foundry
-2. Note your endpoint URL (e.g., `https://your-resource.cognitiveservices.azure.com/`)
-3. Copy your API key from the Azure Portal
+1. In the **[Azure Portal](https://portal.azure.com)** or **[Azure AI Foundry](https://ai.azure.com)**, create an **Azure AI Foundry** (or **Azure AI Services**) resource in a supported region (e.g., `Sweden Central`, `West US`, `Australia East`, `East US 2`).
+2. Go to **Keys and Endpoint** in your resource overview.
+3. Note your endpoint URL (e.g., `https://your-resource.cognitiveservices.azure.com/`).
+4. Copy your API key from the Azure Portal.
+5. (Optional) Out of the box, Content Understanding uses prebuilt analyzers like `prebuilt-documentSearch` or `prebuilt-layout` without requiring manual model training. You can also configure custom analyzers in Azure AI Foundry.
 
 ### 2. Local Development
 
@@ -54,8 +56,9 @@ docker build -t openwebui-doculoader .
 # Run the container
 docker run -d \
   -p 8000:8000 \
-  -e AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="https://your-resource.cognitiveservices.azure.com/" \
-  -e AZURE_DOCUMENT_INTELLIGENCE_KEY="your-api-key" \
+  -e AZURE_CONTENT_UNDERSTANDING_ENDPOINT="https://your-resource.cognitiveservices.azure.com/" \
+  -e AZURE_CONTENT_UNDERSTANDING_KEY="your-api-key" \
+  -e AZURE_CONTENT_UNDERSTANDING_ANALYZER_ID="prebuilt-documentSearch" \
   --name doculoader \
   openwebui-doculoader
 ```
@@ -66,8 +69,9 @@ docker run -d \
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | Azure Document Intelligence endpoint URL | Yes | - |
-| `AZURE_DOCUMENT_INTELLIGENCE_KEY` | Azure API key | Yes | - |
+| `AZURE_CONTENT_UNDERSTANDING_ENDPOINT` | Azure Content Understanding endpoint URL | Yes | - |
+| `AZURE_CONTENT_UNDERSTANDING_KEY` | Azure Content Understanding API key | Yes | - |
+| `AZURE_CONTENT_UNDERSTANDING_ANALYZER_ID` | Analyzer ID to use | No | `prebuilt-documentSearch` |
 | `TEMP_WORK_DIR` | Temporary directory for file processing | No | `/tmp/doculoader` |
 
 ## API Endpoints
@@ -100,11 +104,11 @@ Authorization: Bearer <token> (optional)
 **Response:**
 ```json
 {
-  "page_content": "Extracted text from all pages...",
+  "page_content": "Extracted structured markdown text...",
   "metadata": {
     "filename": "document.pdf",
     "content_type": "application/pdf",
-    "engine": "azure-document-intelligence"
+    "engine": "azure-content-understanding"
   }
 }
 ```
@@ -125,17 +129,15 @@ Once running, access interactive API documentation at:
 
 The service will automatically handle PUT requests to `/process` endpoint.
 
-Now when you upload PDF documents to Open Web UI, they will be processed through Azure Document Intelligence with per-page OCR.
+Now when you upload PDF documents to Open Web UI, they will be processed through Azure AI Content Understanding with high-quality markdown extraction.
 
 ## How It Works
 
 1. Client (Open Web UI) sends a PUT request to `/process` with raw PDF data
-2. PDF is split into individual page files using pypdf library
-3. Each page file is sent separately to Azure Document Intelligence using the `prebuilt-read` model
-4. Text is extracted from each page independently
-5. Results from all pages are accumulated and formatted with page markers
-6. Complete text is returned in `page_content` field with metadata
-7. Temporary files (original PDF and page files) are cleaned up
+2. Document bytes are sent directly to Azure AI Content Understanding using the `prebuilt-documentSearch` analyzer
+3. Content Understanding extracts text, layout, tables, and document hierarchy as structured markdown
+4. Extracted markdown text is returned in `page_content` field with metadata
+5. Temporary processing files are cleaned up
 
 ## Development
 
@@ -168,7 +170,6 @@ with open('test-document.pdf', 'rb') as f:
 The application logs important events including:
 - File uploads and processing
 - Azure API interactions
-- Page processing progress
 - Errors and warnings
 
 View logs:
@@ -182,17 +183,17 @@ docker logs doculoader
 
 ## Troubleshooting
 
-### "Azure Document Intelligence credentials not configured"
-- Ensure `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` and `AZURE_DOCUMENT_INTELLIGENCE_KEY` are set
+### "Azure Content Understanding credentials not configured"
+- Ensure `AZURE_CONTENT_UNDERSTANDING_ENDPOINT` and `AZURE_CONTENT_UNDERSTANDING_KEY` are set
 - Check that environment variables are properly loaded
 
 ### "Only PDF files are supported"
-- This service currently only processes PDF files
+- This service currently processes PDF files
 - Ensure your file has a `.pdf` extension
 
 ### Azure API Errors
 - Verify your Azure credentials are correct
-- Check that your Azure resource is active and has available quota
+- Check that your Azure resource is active and has model deployments configured (e.g. GPT-4o)
 - Ensure your endpoint URL is properly formatted
 
 ## License
@@ -207,4 +208,4 @@ Contributions are welcome! Please open an issue or submit a pull request.
 
 For issues and questions:
 - Open an issue on GitHub
-- Check Azure Document Intelligence documentation: https://learn.microsoft.com/azure/ai-services/document-intelligence/
+- Check Azure AI Content Understanding documentation: https://learn.microsoft.com/azure/ai-services/content-understanding/
