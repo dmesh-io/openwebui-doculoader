@@ -3,6 +3,7 @@ Pytest tests for OpenWebUI Document Loader API using Azure AI Content Understand
 """
 import io
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
 from azure.core.exceptions import HttpResponseError
@@ -293,3 +294,95 @@ class TestDirectExtractionFunction:
         
         result = extract_text_from_pdf(str(test_file))
         assert result == "# Extracted File Content"
+
+
+class TestStructuredExtraction:
+    """The structure payload exposes tables as cell grids (row/column indices,
+    cell kind, page attribution) so clients can bind columns deterministically."""
+
+    def _mock_result_with_structure(self):
+        pages = [
+            SimpleNamespace(page_number=1, spans=[SimpleNamespace(offset=0, length=50)]),
+            SimpleNamespace(page_number=2, spans=[SimpleNamespace(offset=50, length=60)]),
+        ]
+        cells = [
+            SimpleNamespace(
+                row_index=0, column_index=0, row_span=1, column_span=1,
+                kind=None, content="Policennummer",
+                span=SimpleNamespace(offset=0, length=10),
+            ),
+            SimpleNamespace(
+                row_index=0, column_index=1, row_span=1, column_span=1,
+                kind=None, content="Betrag",
+                span=SimpleNamespace(offset=55, length=6),
+            ),
+        ]
+        table = SimpleNamespace(
+            row_count=1, column_count=2,
+            span=SimpleNamespace(offset=0, length=110), cells=cells,
+        )
+        content = SimpleNamespace(
+            markdown="| Policennummer | Betrag |\n| --- | --- |\n| A1 | 10,00 |",
+            pages=pages, tables=[table],
+            start_page_number=1, end_page_number=2,
+        )
+        result = SimpleNamespace(contents=[content])
+        poller = Mock()
+        poller.result.return_value = result
+        client = Mock()
+        client.begin_analyze_binary.return_value = poller
+        return client
+
+    def test_process_endpoint_includes_structure(self, client):
+        """Tables, cells and per-cell page attribution travel in the response."""
+        with patch("main.get_azure_client") as mock_get_client:
+            mock_get_client.return_value = self._mock_result_with_structure()
+            response = client.put(
+                "/process",
+                content=create_test_pdf_bytes(),
+                headers={"Content-Type": "application/pdf", "X-Filename": "test.pdf"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page_count"] == 2
+        contents = data["structure"]["contents"]
+        assert len(contents) == 1
+        assert contents[0]["start_page_number"] == 1
+        assert contents[0]["end_page_number"] == 2
+
+        tables = contents[0]["tables"]
+        assert len(tables) == 1
+        table = tables[0]
+        assert table["row_count"] == 1
+        assert table["column_count"] == 2
+        assert table["page_number"] == 1
+
+        cell_pages = {cell["column_index"]: cell["page_number"] for cell in table["cells"]}
+        assert cell_pages == {0: 1, 1: 2}
+        assert all(cell["kind"] == "content" for cell in table["cells"])
+        assert table["cells"][0]["content"] == "Policennummer"
+
+    def test_process_endpoint_tolerates_non_iterable_structure(self, client, mock_azure_client):
+        """Contents whose pages/tables are not real collections (mocked tests,
+        optional SDK fields) must not break the response."""
+        mock_result = Mock()
+        mock_content = Mock()
+        mock_content.markdown = "Plain content without structure"
+        mock_result.contents = [mock_content]
+
+        mock_poller = Mock()
+        mock_poller.result.return_value = mock_result
+        mock_azure_client.begin_analyze_binary.return_value = mock_poller
+
+        response = client.put(
+            "/process",
+            content=create_test_pdf_bytes(),
+            headers={"Content-Type": "application/pdf"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page_content"] == "Plain content without structure"
+        assert data["structure"]["contents"] == [{"pages": [], "tables": [], "start_page_number": None, "end_page_number": None}]
+        assert data["page_count"] == 0
